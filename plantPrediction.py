@@ -8,7 +8,6 @@ import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 import torch
 import torch.nn as nn
@@ -16,7 +15,8 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import StepLR
 import torchvision
-from torchvision import datasets, transforms, models
+from torchvision import datasets, transforms
+from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 from PIL import Image
 
 # Disable warnings
@@ -48,7 +48,6 @@ else:
     print("Dataset already extracted.")
 
 # Define training and validation directories
-# Adjust path according to ZIP structure
 train_dir = os.path.join(extract_path, "New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)", "train")
 valid_dir = os.path.join(extract_path, "New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)", "valid")
 
@@ -66,13 +65,13 @@ train_transform = transforms.Compose([
     transforms.RandomHorizontalFlip(),
     transforms.RandomRotation(20),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
                          std=[0.229, 0.224, 0.225])
 ])
 valid_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
                          std=[0.229, 0.224, 0.225])
 ])
 
@@ -89,12 +88,13 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, nu
 valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
 
 #########################################
-# Prepare model (ResNet50 with transfer learning)
+# Prepare model (EfficientNet-B0 with transfer learning)
 #########################################
-# Load pre-trained model and adjust final layer
-model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
-num_ftrs = model.fc.in_features
-model.fc = nn.Linear(num_ftrs, len(Diseases_classes))
+# Load pre-trained EfficientNet-B0 and modify final layer
+weights = EfficientNet_B0_Weights.IMAGENET1K_V1
+model = efficientnet_b0(weights=weights)
+num_ftrs = model.classifier[1].in_features
+model.classifier[1] = nn.Linear(num_ftrs, len(Diseases_classes))
 model = model.to(device)
 
 # Enable mixed precision
@@ -119,53 +119,53 @@ for epoch in range(num_epochs):
     correct = 0
     total = 0
     start_time = time.time()
-    
+
     for inputs, labels in train_loader:
         inputs, labels = inputs.to(device), labels.to(device)
         optimizer.zero_grad()
-        
+
         with torch.cuda.amp.autocast():
             outputs = model(inputs)
             loss = criterion(outputs, labels)
-            
+
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
-        
+
         running_loss += loss.item() * inputs.size(0)
         _, predicted = outputs.max(1)
         total += labels.size(0)
         correct += predicted.eq(labels).sum().item()
-        
+
     train_loss = running_loss / total
     train_acc = 100. * correct / total
-    
+
     # Validation
     model.eval()
     val_loss = 0.0
     correct = 0
     total = 0
-    
+
     with torch.no_grad():
         for inputs, labels in valid_loader:
             inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
             loss = criterion(outputs, labels)
-            
+
             val_loss += loss.item() * inputs.size(0)
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
-    
+
     val_loss /= total
     val_acc = 100. * correct / total
     scheduler.step()
-    
+
     elapsed_time = time.time() - start_time
     print(f"Epoch {epoch+1}/{num_epochs} | Time: {elapsed_time:.2f}s | "
           f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}% | "
           f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
-    
+
     # Early stopping and saving best model
     if val_acc > best_acc:
         best_acc = val_acc
@@ -183,21 +183,41 @@ print("Training completed. Model saved as 'best_model.pth'")
 # Functions to load trained model and perform inference
 #########################################
 def load_trained_model():
-    model_trained = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
-    num_ftrs = model_trained.fc.in_features
-    model_trained.fc = nn.Linear(num_ftrs, len(Diseases_classes))
+    """Load the trained EfficientNet-B0 model with updated classifier."""
+    weights = EfficientNet_B0_Weights.IMAGENET1K_V1
+    model_trained = efficientnet_b0(weights=weights)
+    num_ftrs = model_trained.classifier[1].in_features
+    model_trained.classifier[1] = nn.Linear(num_ftrs, len(Diseases_classes))
     model_trained.load_state_dict(torch.load("best_model.pth", map_location=torch.device('cpu')))
     model_trained.eval()
     return model_trained
 
 def predict_image(image_path):
+    """Predict the disease class for a given image."""
+    # Load and preprocess image
     image = Image.open(image_path).convert('RGB')
     image_tensor = valid_transform(image).unsqueeze(0)
+
+    # Load trained model
     trained_model = load_trained_model()
-    
+
+    # Perform inference
     with torch.no_grad():
         outputs = trained_model(image_tensor)
         _, predicted = torch.max(outputs, 1)
-    
+
     result = Diseases_classes[predicted.item()]
-    print(f"The plant is diagnosed with: {result}")
+    print(f"Image: {image_path} → Predicted: {result}")
+
+
+#########################################
+# Célula de upload e diagnóstico
+#########################################
+from google.colab import files
+
+# Abre diálogo para upload de arquivos
+uploaded = files.upload()
+
+# Para cada arquivo enviado, realiza a predição
+for file_name in uploaded.keys():
+    predict_image(file_name)
